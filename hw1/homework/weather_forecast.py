@@ -21,7 +21,9 @@ class WeatherForecast:
             min_per_day: tensor of size (num_days,)
             max_per_day: tensor of size (num_days,)
         """
-        raise NotImplementedError
+        min_per_day = torch.min(self.data, dim=1)[0]
+        max_per_day = torch.max(self.data, dim=1)[0]
+        return min_per_day, max_per_day
 
     def find_the_largest_drop(self) -> torch.Tensor:
         """
@@ -31,7 +33,8 @@ class WeatherForecast:
         Returns:
             tensor of a single value, the difference in temperature
         """
-        raise NotImplementedError
+        avg_per_day = torch.mean(self.data, dim=1)
+        return torch.diff(avg_per_day).min()
 
     def find_the_most_extreme_day(self) -> torch.Tensor:
         """
@@ -40,7 +43,9 @@ class WeatherForecast:
         Returns:
             tensor with size (num_days,)
         """
-        raise NotImplementedError
+        avg_per_day = torch.mean(self.data, dim=1, keepdim=True)
+        idx = torch.argmax(torch.abs(self.data - avg_per_day), dim=1)
+        return torch.gather(self.data, 1, idx.unsqueeze(1)).squeeze(1)
 
     def max_last_k_days(self, k: int) -> torch.Tensor:
         """
@@ -49,7 +54,7 @@ class WeatherForecast:
         Returns:
             tensor of size (k,)
         """
-        raise NotImplementedError
+        return torch.max(self.data[-k:], dim=1)[0]
 
     def predict_temperature(self, k: int) -> torch.Tensor:
         """
@@ -62,7 +67,7 @@ class WeatherForecast:
         Returns:
             tensor of a single value, the predicted temperature
         """
-        raise NotImplementedError
+        return torch.mean(self.data[-k:])
 
     def what_day_is_this_from(self, t: torch.FloatTensor) -> torch.LongTensor:
         """
@@ -87,4 +92,6 @@ class WeatherForecast:
         Returns:
             tensor of a single value, the index of the closest data element
         """
-        raise NotImplementedError
+        diffs = torch.sum(torch.abs(self.data - t), dim=1)
+        idx = torch.argmin(diffs)
+        return idx
