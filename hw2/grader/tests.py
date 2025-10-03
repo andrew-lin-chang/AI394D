@@ -18,8 +18,9 @@ LABEL_NAMES = ["background", "kart", "pickup", "nitro", "bomb", "projectile"]
 
 
 def get_device() -> torch.device:
-    if torch.cuda.is_available() and False:
+    if torch.cuda.is_available():
         device = torch.device("cuda")
+        print("Using cuda for grading")
     elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
         device = torch.device("mps")
     else:
