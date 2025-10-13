@@ -20,6 +20,7 @@ def train(
     **kwargs,
 ):
     if torch.cuda.is_available():
+        print("Using GPU for training...")
         device = torch.device("cuda")
     elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
         device = torch.device("mps")
@@ -45,7 +46,7 @@ def train(
 
     # create loss function and optimizer
     loss_func = ClassificationLoss()
-    # optimizer = ...
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
     global_step = 0
     metrics = {"train_acc": [], "val_acc": []}
@@ -62,7 +63,14 @@ def train(
             img, label = img.to(device), label.to(device)
 
             # TODO: implement training step
-            raise NotImplementedError("Training step not implemented")
+            optimizer.zero_grad()
+            logits = model(img)
+            loss = loss_func(logits, label)
+            loss.backward()
+            optimizer.step()
+
+            pred = logits.argmax(dim=1)
+            metrics["train_acc"].append((pred == label).float().mean().item())
 
             global_step += 1
 
@@ -74,13 +82,16 @@ def train(
                 img, label = img.to(device), label.to(device)
 
                 # TODO: compute validation accuracy
-                raise NotImplementedError("Validation accuracy not implemented")
+                logits = model(img)
+                pred = logits.argmax(dim=1)
+                metrics["val_acc"].append((pred == label).float().mean().item())
 
         # log average train and val accuracy to tensorboard
         epoch_train_acc = torch.as_tensor(metrics["train_acc"]).mean()
         epoch_val_acc = torch.as_tensor(metrics["val_acc"]).mean()
 
-        raise NotImplementedError("Logging not implemented")
+        logger.add_scalar("train/accuracy", epoch_train_acc, global_step)
+        logger.add_scalar("val/accuracy", epoch_val_acc, global_step)
 
         # print on first, last, every 10th epoch
         if epoch == 0 or epoch == num_epoch - 1 or (epoch + 1) % 10 == 0:
