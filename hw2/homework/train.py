@@ -8,6 +8,7 @@ import torch.utils.tensorboard as tb
 
 from .models import ClassificationLoss, load_model, save_model
 from .utils import load_data
+from ray import tune
 
 
 def train(
@@ -46,7 +47,7 @@ def train(
 
     # create loss function and optimizer
     loss_func = ClassificationLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
 
     global_step = 0
     metrics = {"train_acc": [], "val_acc": []}
@@ -92,6 +93,9 @@ def train(
 
         logger.add_scalar("train/accuracy", epoch_train_acc, global_step)
         logger.add_scalar("val/accuracy", epoch_val_acc, global_step)
+
+        # report to Ray Tune
+        tune.report(train_accuracy=epoch_train_acc.item(), val_accuracy=epoch_val_acc.item()) 
 
         # print on first, last, every 10th epoch
         if epoch == 0 or epoch == num_epoch - 1 or (epoch + 1) % 10 == 0:
