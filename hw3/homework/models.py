@@ -26,8 +26,30 @@ class Classifier(nn.Module):
         self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN))
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
 
-        # TODO: implement
-        pass
+        self.features = nn.Sequential(
+            nn.Conv2d(in_channels, 16, kernel_size=3, padding=1),
+            nn.GroupNorm(1, 16),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.GroupNorm(1, 32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.GroupNorm(1, 64),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1),
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(64, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, num_classes),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -41,8 +63,9 @@ class Classifier(nn.Module):
         z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
         # TODO: replace with actual forward pass
-        logits = torch.randn(x.size(0), 6)
-
+        features = self.features(z)
+        features = torch.flatten(features, 1)
+        logits = self.classifier(features)
         return logits
 
     def predict(self, x: torch.Tensor) -> torch.Tensor:
@@ -65,6 +88,7 @@ class Detector(torch.nn.Module):
         self,
         in_channels: int = 3,
         num_classes: int = 3,
+        base_channels: int = 16,
     ):
         """
         A single model that performs segmentation and depth regression
@@ -78,8 +102,45 @@ class Detector(torch.nn.Module):
         self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN))
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
 
-        # TODO: implement
-        pass
+        C = base_channels
+
+        # downsample to reduce spatial resolution by factor 4
+        self.down1 = nn.Sequential(
+            nn.Conv2d(in_channels, C, kernel_size=3, stride=2, padding=1),  # H/2
+            nn.GroupNorm(1, C),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(C, C * 2, kernel_size=3, stride=2, padding=1),        # H/4
+            nn.GroupNorm(1, C * 2),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(C * 2, C * 4, kernel_size=3, padding=1),
+            nn.GroupNorm(1, C * 4),
+            nn.ReLU(inplace=True),
+        )
+
+        # upsample twice to recover original resolution
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(C * 4, C * 2, kernel_size=2, stride=2),     # H/2
+            nn.GroupNorm(1, C * 2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(C * 2, C * 2, kernel_size=3, padding=1),
+            nn.GroupNorm(1, C * 2),
+            nn.ReLU(inplace=True),
+        )
+
+        self.up2 = nn.Sequential(
+            nn.ConvTranspose2d(C * 2, C, kernel_size=2, stride=2),         # H
+            nn.GroupNorm(1, C),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(C, C, kernel_size=3, padding=1),
+            nn.GroupNorm(1, C),
+            nn.ReLU(inplace=True),
+        )
+
+        # Heads
+        self.seg_head = nn.Conv2d(C, num_classes, kernel_size=1)
+        self.depth_head = nn.Conv2d(C, 1, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -98,8 +159,12 @@ class Detector(torch.nn.Module):
         z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
         # TODO: replace with actual forward pass
-        logits = torch.randn(x.size(0), 3, x.size(2), x.size(3))
-        raw_depth = torch.rand(x.size(0), x.size(2), x.size(3))
+        d1 = self.down1(z)
+        u1 = self.up1(d1)
+        u2 = self.up2(u1)
+        
+        logits = self.seg_head(u2)
+        raw_depth = self.depth_head(u2).squeeze(1)
 
         return logits, raw_depth
 
