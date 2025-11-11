@@ -88,7 +88,7 @@ class Detector(torch.nn.Module):
         self,
         in_channels: int = 3,
         num_classes: int = 3,
-        base_channels: int = 16,
+        base_channels: int = 32,
     ):
         """
         A single model that performs segmentation and depth regression
@@ -104,39 +104,38 @@ class Detector(torch.nn.Module):
 
         C = base_channels
 
-        # downsample to reduce spatial resolution by factor 4
-        self.down1 = nn.Sequential(
-            nn.Conv2d(in_channels, C, kernel_size=3, stride=2, padding=1),  # H/2
-            nn.GroupNorm(1, C),
-            nn.ReLU(inplace=True),
+        def conv_block(in_c, out_c):
+            return nn.Sequential(
+                nn.Conv2d(in_c, out_c, kernel_size=3, padding=1),
+                nn.GroupNorm(1, out_c),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_c, out_c, kernel_size=3, padding=1),
+                nn.GroupNorm(1, out_c),
+                nn.ReLU(inplace=True),
+            )
 
-            nn.Conv2d(C, C * 2, kernel_size=3, stride=2, padding=1),        # H/4
-            nn.GroupNorm(1, C * 2),
-            nn.ReLU(inplace=True),
+        # Encoder
+        self.enc1 = conv_block(in_channels, C)          # (B, C, H, W)
+        self.pool1 = nn.Conv2d(C, C, kernel_size=2, stride=2)   # H/2
 
-            nn.Conv2d(C * 2, C * 4, kernel_size=3, padding=1),
+        self.enc2 = conv_block(C, C * 2)                # (B, 2C, H/2, W/2)
+        self.pool2 = nn.Conv2d(C * 2, C * 2, kernel_size=2, stride=2)  # H/4
+
+        self.enc3 = conv_block(C * 2, C * 4)            # (B, 4C, H/4, W/4)
+
+        # Bottleneck with dilation to increase receptive field
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(C * 4, C * 4, kernel_size=3, padding=2, dilation=2),
+            nn.GroupNorm(1, C * 4),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(C * 4, C * 4, kernel_size=3, padding=1),
             nn.GroupNorm(1, C * 4),
             nn.ReLU(inplace=True),
         )
 
-        # upsample twice to recover original resolution
-        self.up1 = nn.Sequential(
-            nn.ConvTranspose2d(C * 4, C * 2, kernel_size=2, stride=2),     # H/2
-            nn.GroupNorm(1, C * 2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(C * 2, C * 2, kernel_size=3, padding=1),
-            nn.GroupNorm(1, C * 2),
-            nn.ReLU(inplace=True),
-        )
-
-        self.up2 = nn.Sequential(
-            nn.ConvTranspose2d(C * 2, C, kernel_size=2, stride=2),         # H
-            nn.GroupNorm(1, C),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(C, C, kernel_size=3, padding=1),
-            nn.GroupNorm(1, C),
-            nn.ReLU(inplace=True),
-        )
+        # Decoder: bilinear upsample + conv after concat with skip
+        self.dec1 = conv_block(C * 4 + C * 2, C * 2)  # after concat with enc2 (H/4 -> H/2)
+        self.dec2 = conv_block(C * 2 + C, C)          # after concat with enc1 (H/2 -> H)
 
         # Heads
         self.seg_head = nn.Conv2d(C, num_classes, kernel_size=1)
@@ -158,15 +157,29 @@ class Detector(torch.nn.Module):
         # optional: normalizes the input
         z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
-        # TODO: replace with actual forward pass
-        d1 = self.down1(z)
-        u1 = self.up1(d1)
-        u2 = self.up2(u1)
-        
-        logits = self.seg_head(u2)
-        raw_depth = self.depth_head(u2).squeeze(1)
+        # encoding
+        e1 = self.enc1(z)
+        p1 = self.pool1(e1)
 
-        return logits, raw_depth
+        e2 = self.enc2(p1)
+        p2 = self.pool2(e2)
+
+        e3 = self.enc3(p2)
+
+        # bottleneck
+        b = self.bottleneck(e3)
+
+        # decoding with skip connections
+        u1 = nn.functional.interpolate(b, size=e2.shape[-2:], mode="bilinear", align_corners=False)
+        d1 = self.dec1(torch.cat([u1, e2], dim=1))
+
+        u2 = nn.functional.interpolate(d1, size=e1.shape[-2:], mode="bilinear", align_corners=False)
+        d2 = self.dec2(torch.cat([u2, e1], dim=1))
+        
+        logits = self.seg_head(d2)
+        depth = self.depth_head(d2).squeeze(1)
+
+        return logits, depth
 
     def predict(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """

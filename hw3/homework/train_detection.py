@@ -25,35 +25,42 @@ def train(
 
     # load and augment data
     train_data = load_data("drive_data/train", return_dataloader=False)
-    # train_data_aug = load_data("drive_data/train", transform_pipeline="aug", return_dataloader=False)
-    # train_data_full = torch.utils.data.ConcatDataset([train_data, train_data_aug])
+    train_data_aug = load_data("drive_data/train", transform_pipeline="aug", return_dataloader=False)
+    train_data_full = torch.utils.data.ConcatDataset([train_data, train_data_aug])
 
-    train_dataloader = torch.utils.data.DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=2)
+    train_dataloader = torch.utils.data.DataLoader(train_data_full, batch_size=batch_size, shuffle=True, num_workers=2)
     val_dataloader = load_data("drive_data/val", shuffle=False)
 
+    # handle class imbalance
+    print("Computing class weights for segmentation loss...")
+    num_classes = 3
+    class_counts = torch.zeros(num_classes, dtype=torch.float)
+    for i in range(len(train_data)):
+        track = train_data[i]["track"]
+        if not isinstance(track, torch.Tensor):
+            track = torch.from_numpy(np.array(track))
+        class_counts += torch.bincount(track.flatten(), minlength=num_classes).float()
+    
+    eps = 1e-6
+    seg_weights = class_counts.sum() / (class_counts + eps)
+    seg_weights = seg_weights / seg_weights.mean()
+    print(f"Segmentation loss class weights: {seg_weights.tolist()}")
+
     # loss function and optimizer
-    seg_loss_func = torch.nn.CrossEntropyLoss()
+    seg_loss_func = torch.nn.CrossEntropyLoss(weight=seg_weights.to(device))
     depth_loss_func = torch.nn.MSELoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    # optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
 
-    metrics = {
-        "train_acc": [],
-        "train_iou": [],
-        "train_abs_depth_error": [],
-        "train_tp_depth_error": [],
-        "val_acc": [],
-        "val_iou": [],
-        "val_abs_depth_error": [],
-        "val_tp_depth_error": [],
-    }
-
-    detection_metric = DetectionMetric()
+    train_metric = DetectionMetric()
 
     # training loop 
     for epoch in range(num_epoch):
+        train_metric.reset()
 
-        for key in metrics:
-            metrics[key].clear()
+
+        epoch_bg_count = 0
+        epoch_total_count = 0
 
         for data in train_dataloader:
             img, depth, track = data["image"].to(device), data["depth"].to(device), data["track"].to(device)
@@ -70,14 +77,20 @@ def train(
             optimizer.step()
 
             pred, raw_depth = model.predict(img)
+            batch_bg = int((pred == 0).sum().item())
+            batch_total = int(pred.numel())
+
+            epoch_bg_count += batch_bg
+            epoch_total_count += batch_total
 
             # # detection metrics
-            detection_metric.add(pred, track, depth_pred, depth)
+            train_metric.add(pred, track, depth_pred, depth)
 
             # batch_train_acc = (pred == label).float().mean().item()
             # metrics["train_acc"].append(batch_train_acc)
         
-        epoch_stats = detection_metric.compute()
+        epoch_stats = train_metric.compute()
+        epoch_bg_pct = epoch_bg_count / epoch_total_count * 100.0 if epoch_total_count > 0 else 0.0
         
 
         # validation
@@ -99,6 +112,10 @@ def train(
             print(
                 f"Epoch {epoch + 1:2d} / {num_epoch:2d}: "
                 f"iou={epoch_stats['iou']:.4f} "
+                f"accuracy={epoch_stats['accuracy']:.4f} "
+                # f"abs_depth_error={epoch_stats['abs_depth_error']:.4f} "
+                # f"tp_depth_error={epoch_stats['tp_depth_error']:.4f} "
+                f"bg%={epoch_bg_pct:.2f} "
             )
 
     save_model(model)
