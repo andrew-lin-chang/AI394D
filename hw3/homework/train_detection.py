@@ -53,6 +53,7 @@ def train(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
 
     train_metric = DetectionMetric()
+    val_metric = DetectionMetric()
 
     # training loop 
     for epoch in range(num_epoch):
@@ -94,18 +95,29 @@ def train(
         
 
         # validation
-        # with torch.inference_mode():
-        #     model.eval()
+        val_metric.reset()
+        val_bg_count = 0
+        val_total_count = 0
+        model.eval()
 
-        #     for img, label in val_dataloader:
-        #         img, label = img.to(device), label.to(device)
+        with torch.inference_mode():
+            for data in val_dataloader:
+                img, depth, track = data["image"].to(device), data["depth"].to(device), data["track"].to(device)
 
-        #         pred = model.predict(img)
-        #         batch_val_acc = (pred == label).float().mean().item()
-        #         metrics["val_acc"].append(batch_val_acc)
+                logits, depth_pred = model(img)
 
-        # epoch_train_acc = torch.as_tensor(metrics["train_acc"]).mean()
-        # epoch_val_acc = torch.as_tensor(metrics["val_acc"]).mean()
+                pred, raw_depth = model.predict(img)
+
+                batch_bg = int((pred == 0).sum().item())
+                batch_total = int(pred.numel())
+
+                val_bg_count += batch_bg
+                val_total_count += batch_total
+
+                val_metric.add(pred, track, depth_pred, depth)
+            
+            epoch_val = val_metric.compute()
+            epoch_val_bg_pct = val_bg_count / val_total_count * 100.0 if val_total_count > 0 else 0.0
         
         # print on first, last, every 10th epoch
         if epoch == 0 or epoch == num_epoch - 1 or (epoch + 1) % 10 == 0:
@@ -116,6 +128,9 @@ def train(
                 # f"abs_depth_error={epoch_stats['abs_depth_error']:.4f} "
                 # f"tp_depth_error={epoch_stats['tp_depth_error']:.4f} "
                 f"bg%={epoch_bg_pct:.2f} "
+                f"val_iou={epoch_val['iou']:.4f} "
+                f"val_accuracy={epoch_val['accuracy']:.4f} "
+                f"val_bg%={epoch_val_bg_pct:.2f}"
             )
 
     save_model(model)
